@@ -1,0 +1,121 @@
+---
+title: "assignment"
+output: html_document
+date: "2026-03-04"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+suppressPackageStartupMessages({
+  library(AnnotationHub)
+  library(ensembldb)
+  library(GenomicRanges)
+  library(IRanges)
+  library(rtracklayer)
+  library(ggplot2)
+})
+```
+
+## Q1
+```{r}
+ah <- AnnotationHub()
+q_edb <- query(ah, c("EnsDb", "Mus musculus", "v102", "GRCm38"))
+q_edb
+```
+
+```{r}
+mcols(q_edb)[, c("title", "description", "species", "genome", "tags")]
+```
+
+```{r}
+edb_id <- names(q_edb)[1]
+edb <- q_edb[[1]]
+edb_id
+edb
+```
+
+```{r}
+q_mm_2bit <- query(ah, c("Mus musculus", "GRCm38", "dna_sm", "2bit"))
+q_mm_2bit
+```
+
+```{r}
+mcols(q_mm_2bit)[, c("title", "description", "species", "genome", "tags")]
+```
+
+```{r}
+mm_2bit_id <- names(q_mm_2bit)[1]
+mm_2bit <- ah[[mm_2bit_id]]
+mm_2bit
+seqinfo(mm_2bit)
+```
+
+```{r}
+q_dm_2bit <- query(ah, c("Drosophila melanogaster", "BDGP6", "dna_sm", "2bit"))
+q_dm_2bit
+mcols(q_dm_2bit)[, c("title", "description", "species", "genome", "tags")]
+
+dm_2bit_id <- names(q_dm_2bit)[1]
+dm_2bit <- ah[[dm_2bit_id]]
+
+dm_2bit
+seqinfo(dm_2bit)
+```
+
+## Q2
+```{r}
+pc_gene_gr <- genes(
+  edb,
+  filter = GeneBiotypeFilter("protein_coding"),
+  columns = c("gene_id", "gene_name", "gene_biotype")
+)
+```
+
+```{r}
+n_ensembl_gene_ids <- length(unique(mcols(pc_gene_gr)$gene_id))
+n_gene_symbols <- length(unique(mcols(pc_gene_gr)$gene_name))
+
+cat("Protein-coding genes:\n")
+cat("Unique Ensembl gene IDs:", n_ensembl_gene_ids, "\n")
+cat("Unique gene symbols:", n_gene_symbols, "\n")
+```
+
+```{r}
+ex_by_tx <- exonsBy(
+  edb,
+  by = "tx",
+  filter = TxBiotypeFilter("protein_coding")
+)
+
+tx_spliced_len <- vapply(ex_by_tx, function(gr) {
+  gr_red <- reduce(gr, ignore.strand = FALSE)
+  sum(width(gr_red))
+}, numeric(1))
+```
+
+```{r}
+df_len <- data.frame(
+  transcript_id = names(tx_spliced_len),
+  spliced_len = as.numeric(tx_spliced_len)
+)
+
+summary(df_len$spliced_len)
+```
+
+```{r}
+p <- ggplot(df_len, aes(x = spliced_len)) +
+  geom_histogram(bins = 100) +
+  scale_x_log10() +
+  labs(
+    title = "Distribution of spliced protein-coding transcript lengths",
+    x = "Spliced length (log10 scale)",
+    y = "Number of transcripts"
+  ) +
+  theme_bw()
+
+print(p)
+```
+

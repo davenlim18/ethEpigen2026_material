@@ -17,7 +17,41 @@ suppressPackageStartupMessages({
 ```{r}
 ah <- AnnotationHub()
 query_results <- query(ah, c("Drosophila", "EnsDb"))
+query_results
 
 ensdb <- ah[["AH113629"]]
 ensdb
 ```
+
+```{r}
+fly_genes <- genes(ensdb)
+fly_genes
+```
+
+```{r}
+head(fly_genes$gene_name)
+head(seqnames(fly_genes))
+```
+
+```{r}
+transcripts(ensdb)
+```
+
+```{r}
+fly_pcg <- fly_genes[fly_genes$gene_biotype=="protein_coding"]
+fly_pcg
+```
+
+```{r}
+myRegion <- GRanges("2L", IRanges(50000, 59000))
+myRegion
+
+fly_genes[which(overlapsAny(genes, myRegion))]
+```
+
+```{r}
+IntegerList()
+findOverlaps()
+plotSignalTracks()
+```
+
