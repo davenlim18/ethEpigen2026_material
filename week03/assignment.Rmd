@@ -1,0 +1,128 @@
+---
+title: "assignment"
+output: html_document
+date: "2026-03-11"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+suppressPackageStartupMessages({
+  library(AnnotationHub)
+  library(Rsubread)
+  library(rtracklayer)
+  library(Biostrings)
+  library(Rfastp)
+  library(epiwraps)
+  library(GenomicRanges)
+})
+ah <- AnnotationHub()
+```
+
+## Downloading files
+```{r}
+genome <- ah[["AH49674"]]
+dir.create("BDGP6_genome")
+export(import.2bit(genome), "BDGP6_genome/genome.fasta.gz", compress=TRUE)
+```
+
+## Building an index
+```{r, eval=FALSE}
+Rsubread::buildindex("BDGP6_genome/rsubread", reference="BDGP6_genome/genome.fasta.gz")
+```
+
+## Alignment
+```{r}
+dir.create("aligned")
+align.stats <- Rsubread::align(index="BDGP6_genome/rsubread",
+  type="dna",
+  readfile1="raw/ENCFF127RRR.fastq.gz",  
+  output_file="aligned/sample.bam",
+  nthreads=6, 
+  sortReadsByCoordinates=TRUE
+)
+align.stats
+```
+
+## Mapping statistics
+```{r}
+mapped_reads <- align.stats["Mapped_reads", 1]
+total_reads <- align.stats["Total_reads", 1]
+
+mapping_percent <- round(mapped_reads / total_reads * 100, 2)
+
+mapped_reads
+mapping_percent
+```
+
+
+
+## Peak calling
+
+```{r}
+install.packages("reticulate")
+library(reticulate)
+reticulate::install_miniconda()
+reticulate::conda_install("r-reticulate", "macs3", channel = "bioconda")
+```
+
+```{bash engine.opts='-l'}
+macs3 callpeak -t aligned/sample.bam -g dm -n sample --outdir peaks
+```
+
+
+```{r}
+dir.create("peaks")
+
+if (!require("BiocManager", quietly=TRUE))
+  install.packages("BiocManager")
+
+BiocManager::install("MACSr")
+
+MACSr::install_macs3()
+
+if(!require("MACSr",quietly=TRUE)) BiocManager::install("MACSr")
+
+library(MACSr)
+
+callpeak(tfile="aligned/sample.bam", cfile = "aligned/input.bam",
+         gsize="dm", outdir = "peaks", name = "sample")
+
+
+peaks <- rtracklayer::import("peaks/sample_peaks.narrowPeak")
+peaks
+
+number_of_peaks <- length(peaks)
+number_of_peaks
+```
+
+## Looking at peaks
+
+```{r}
+genes <- ah[["AH70563"]]  
+
+peaks_in_genes <- subsetByOverlaps(peaks, genes)
+
+peak_of_interest <- peaks_in_genes[1]
+peak_of_interest
+```
+
+```{r}
+dir.create("coverage_tracks")
+
+bam2bw(
+  "aligned/sample.bam",
+  output_bw="coverage_tracks/sample.bw",
+  extend=151
+)
+
+plotSignalTracks(
+  list(sample="coverage_tracks/sample.bw",
+       peaks=peaks),
+  region=peak_of_interest,
+  extend=5000
+)
+```
+
