@@ -101,7 +101,7 @@ number_of_peaks
 ## Looking at peaks
 
 ```{r}
-genes <- ah[["AH70563"]]  
+genes <- ah[["AH49674"]]  
 
 peaks_in_genes <- subsetByOverlaps(peaks, genes)
 
