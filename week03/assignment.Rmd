@@ -53,76 +53,72 @@ total_reads <- align.stats["Total_reads", 1]
 
 mapping_percent <- round(mapped_reads / total_reads * 100, 2)
 
-mapped_reads
-mapping_percent
+print(paste("Number of reads:", mapped_reads))
+print(paste("Mapping percentage:", mapping_percent))
 ```
 
 
 
 ## Peak calling
-
-```{r}
-install.packages("reticulate")
-library(reticulate)
-reticulate::install_miniconda()
-reticulate::conda_install("r-reticulate", "macs3", channel = "bioconda")
-```
-
-```{bash engine.opts='-l'}
-macs3 callpeak -t aligned/sample.bam -g dm -n sample --outdir peaks
-```
-
-
 ```{r}
 dir.create("peaks")
 
-if (!require("BiocManager", quietly=TRUE))
-  install.packages("BiocManager")
+# if (!require("BiocManager", quietly=TRUE))
+#   install.packages("BiocManager")
+# 
+# BiocManager::install("MACSr")
+# 
+# MACSr::install_macs3()
+# 
+# if(!require("MACSr",quietly=TRUE)) BiocManager::install("MACSr")
+# 
+# library(MACSr)
+# 
+# callpeak(tfile="aligned/sample.bam", cfile = "aligned/input.bam",
+#          gsize="dm", outdir = "peaks", name = "sample")
+# 
+# peaks <- rtracklayer::import("peaks/sample_peaks.narrowPeak")
+# peaks
 
-BiocManager::install("MACSr")
-
-MACSr::install_macs3()
-
-if(!require("MACSr",quietly=TRUE)) BiocManager::install("MACSr")
-
-library(MACSr)
-
-callpeak(tfile="aligned/sample.bam", cfile = "aligned/input.bam",
-         gsize="dm", outdir = "peaks", name = "sample")
-
-
-peaks <- rtracklayer::import("peaks/sample_peaks.narrowPeak")
+peaks <- epiwraps::callPeaks(
+  bam = "aligned/sample.bam",
+  control = "aligned/input.bam"
+)
 peaks
 
 number_of_peaks <- length(peaks)
-number_of_peaks
+print(paste("Number of peaks that are found:", number_of_peaks))
 ```
 
 ## Looking at peaks
 
 ```{r}
-genes <- ah[["AH70563"]]  
+genes <- ah[["AH49674"]]  
 
-peaks_in_genes <- subsetByOverlaps(peaks, genes)
+dm <- query(ah, c("Drosophila melanogaster", "EnsDb"))
+dm <- ah[[rev(dm$ah_id)[1]]]
 
-peak_of_interest <- peaks_in_genes[1]
+dm_genes <- genes(dm)
+
+peaks_in_genes <- findOverlaps(peaks, dm_genes)
+peak_of_interest <- queryHits(peaks_in_genes)[1]
+
 peak_of_interest
 ```
 
 ```{r}
 dir.create("coverage_tracks")
 
-bam2bw(
-  "aligned/sample.bam",
-  output_bw="coverage_tracks/sample.bw",
-  extend=151
-)
-
 plotSignalTracks(
-  list(sample="coverage_tracks/sample.bw",
-       peaks=peaks),
-  region=peak_of_interest,
-  extend=5000
+  list(CTFC = "aligned/sample.bam", Peaks = peaks),
+  region = peaks[peak_of_interest],
+  extend = 5000
 )
+```
+## Final report
+```{r}
+print(paste("Number of reads:", mapped_reads))
+print(paste("Mapping percentage:", mapping_percent))
+print(paste("Number of peaks that are found:", number_of_peaks))
 ```
 
