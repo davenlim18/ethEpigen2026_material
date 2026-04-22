@@ -1,0 +1,210 @@
+---
+title: "ATAC-seq assignment"
+author: "Daven"
+output: html_document
+---
+
+# Part 1
+```{r}
+suppressPackageStartupMessages({
+  library(epiwraps)
+  library(AnnotationHub)
+  library(MotifDb)
+  library(memes)
+  library(universalmotif)
+  library(ensembldb)
+  library(ggplot2)
+})
+
+ah <- AnnotationHub(localHub=FALSE)
+ensdb <- ah[["AH89211"]] # mouse ensembldb object
+```
+
+
+## Download the data
+
+```{r, eval=FALSE}
+download.file("https://ethz-ins.org/content/w7/atac.chr19.bam", "atac.chr19.bam", mode="wb")
+download.file("https://ethz-ins.org/content/w7/atac.chr19.bam.bai", "atac.chr19.bam.bai", mode="wb")
+```
+## Preparing tracks
+
+```{r}
+bam <- "atac.chr19.bam"
+
+
+# create a track using only nucleosome-free fragments, the number of cuts/insertion sites at each position
+bam2bw(bam, output_bw = "NF_cuts.bw", paired=TRUE, binWidth=1L, type="ends", minFragLength=30, 
+       maxFragLength=120, trim=4L, extend=3L, forceSeqlevelsStyle = "Ensembl")
+
+# create a track using only the (10bp) centers of mono-nucleosome fragments
+bam2bw(bam, output_bw = "mono_centers.bw", paired=TRUE, binWidth=5L, minFragLength=140, trim=4L,
+       maxFragLength=220, type="center", extend=10L, forceSeqlevelsStyle = "Ensembl")
+```
+
+## Obtaining the sites with a CTCF motif
+
+```{r}
+# get CTCF motif
+motif <- MotifDb::query(MotifDb, c("CTCF","Mus"))[[1]]
+motif2 <- convert_motifs(motif, class="TFBSTools-PFMatrix")
+genome <- ah[["AH68356"]]
+# get the sequence for chr19:
+chr19 <- import(genome)["19"]
+
+# find motif matches across chr19
+moi <- motifmatchr::matchMotifs(motif2, chr19, out="positions", p.cutoff=1e-5)[[1]]
+# convert to GRanges
+moi <- as(setNames(moi,names(chr19)), "GRanges")
+```
+
+## Plotting signal around the motif occurences
+
+```{r, fig.width=8, fig.height=4}
+tracks <- c(
+  NF_cuts = "NF_cuts.bw",
+  mono_centers = "mono_centers.bw"
+)
+names(tracks) <- gsub("\\.bw","",basename(tracks))
+
+# extract signals around the motif occurences
+# we zoom in to 300bp around the motif centers, in windows of 5bp
+sm <- signal2Matrix(tracks, moi, w=5, extend=300)
+
+# plot the signals:
+plotEnrichedHeatmaps(sm, trim=0.95, multiScale = TRUE, axis_name = "0")
+```
+
+
+## Summarizing the signals
+
+```{r}
+d <- meltSignals(sm[, c("NF_cuts", "mono_centers")])
+
+ggplot(d, aes(x = position, y = mean, colour = sample)) +
+  geom_line(linewidth = 1.2) +
+  geom_vline(xintercept = 0, linetype = 2, colour = "grey40") +
+  labs(
+    x = "Distance from CTCF motif center (bp)",
+    y = "Mean signal",
+    colour = NULL,
+    title = "ATAC-seq signal around high-confidence CTCF motifs on chr19",
+    subtitle = "Nucleosome-free cuts and mono-nucleosome fragment centers"
+  ) +
+  theme_classic(base_size = 12)
+```
+
+
+# Part 2
+```{r}
+if (!requireNamespace("BiocManager", quietly = TRUE))
+  install.packages("BiocManager")
+
+BiocManager::install("BSgenome.Mmusculus.UCSC.mm10")
+
+BiocManager::install("plger/betterChromVAR")
+
+suppressPackageStartupMessages({
+  library(motifmatchr)
+  library(MotifDb)
+  library(universalmotif)
+  library(ggplot2)
+  library(sechm)
+  library(BSgenome.Mmusculus.UCSC.mm10)
+  library(limma)
+  library(betterChromVAR)
+})
+
+ah <- AnnotationHub(localHub=TRUE)
+ensdb <- ah[["AH89211"]] # mouse ensembldb object
+```
+
+## Download the data
+
+```{r, eval=FALSE}
+download.file("https://ethz-ins.org/content/mouse_mm38_hippocampus.peakCounts.SE.rds", "peakCounts.rds", mode="wb")
+```
+
+```{r}
+se <- readRDS("peakCounts.rds")
+```
+
+## Annotate regions
+
+```{r}
+se <- GenomeInfoDb::keepStandardChromosomes(se, pruning.mode = "coarse")
+seqlevelsStyle(se) <- "UCSC"
+se <- addGCBias(se, genome=BSgenome.Mmusculus.UCSC.mm10)
+```
+
+### Motif matches
+
+```{r}
+motifs <- query(MotifDb, "HOCOMOCOv13")
+```
+
+convert the motifs to something that `motifmatchr` accepts
+
+```{r, message=FALSE}
+motifs <- do.call(TFBSTools::PWMatrixList, convert_motifs(motifs, class="TFBSTools-PWMatrix"))
+names(motifs) <- make.unique(sapply(motifs, \(x) gsub("\\..+","",x@name)))
+```
+
+scan regions for matches of the motifs
+
+```{r}
+matches <- motifmatchr::matchMotifs(motifs, se, genome=BSgenome.Mmusculus.UCSC.mm10)
+matches
+```
+
+a SummarizedExperiment, where columns are the motifs and the rows are the regions, and the assay is a logical sparse matrix:
+
+```{r}
+assay(matches)[1:10,1:20]
+```
+
+## Get motifs deviations
+
+```{r}
+dev <- betterChromVAR(se, matches)
+dev
+```
+
+The output is a SummarizedExperiment, this time with samples as columns and motifs as rows.
+The values represent the relative accessibility of each motif in each sample.
+
+## Differential analysis
+
+We can use these motif deviations to perform differential analysis:
+
+```{r}
+dev$sex <- ifelse(grepl("female", colnames(dev)), "Female",
+           ifelse(grepl("male", colnames(dev)), "Male", NA))
+design <- model.matrix(~sex, data=as.data.frame(colData(dev)))
+fit <- eBayes(lmFit(assay(dev, "z"), design))
+res <- as.data.frame(topTable(fit, number = Inf))
+res$motif <- row.names(res)
+ggplot(res, aes(logFC, -log10(adj.P.Val), label=motif)) + geom_text()
+```
+```{r}
+dev$sex
+```
+
+
+## Heatmap
+```{r}
+top_n <- 15
+top_motifs <- rownames(res)[seq_len(min(top_n, nrow(res)))]
+
+ord <- order(dev$sex)
+
+sechm(
+  dev[, ord],
+  features = top_motifs,
+  assayName = "z",
+  gaps_at = "sex",
+  cluster_cols = FALSE
+)
+```
+
+
