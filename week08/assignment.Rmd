@@ -1,0 +1,220 @@
+---
+title: "DNA methylation and enrichment analysis"
+author: "Daven"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup}
+if (!requireNamespace("BiocManager", quietly = TRUE))
+  install.packages("BiocManager")
+
+BiocManager::install("bsseq")   
+BiocManager::install("DMRcate")
+
+BiocManager::install('IlluminaHumanMethylationEPICanno.ilm10b4.hg19')
+
+suppressPackageStartupMessages({
+  library(epiwraps)
+  library(ggplot2)
+  library(AnnotationHub)
+  library(ensembldb)
+  library(edgeR)
+  library(rtracklayer)
+  library(BiocParallel)
+  library(bsseq)   # Class and tools to analyze bisulfite sequencing data at CpG-level
+  library(DMRcate) # Identification of differentially-methylated regions
+})
+```
+
+# Part 1
+
+## Load the data
+
+Download:
+```{r, download, eval=FALSE}
+options(timeout = 6000)
+download.file("https://ethz-ins.org/content/w11_practical.zip", "w11_practical.zip")
+unzip("w11_practical.zip")
+```
+
+```{r}
+DNAme <- readRDS("comparison/DNAme.rds")
+tracks <- list(ATAC="comparison/ATAC.bw",
+               H3K27ac="comparison/H3K27ac.bw",
+               H3K4me3="comparison/H3K4me3.bw",
+               DNAme=DNAme)
+```
+
+### Load the gene annotation data
+```{r, annotation}
+ah <- AnnotationHub()
+ensdb <- ah[["AH89211"]] # GRCm38
+```
+
+Obtaining the promoter coordinates of chromosome 1:
+
+```{r, load promoters}
+chr1 <-  GRanges(seqnames=Rle(c("1")), 
+                 ranges = IRanges(1, end=195471971))
+
+# We define promoters as the regions +/- 200 of the TSS
+promoterRegions <- promoters(ensdb, upstream=200, downstream=200,
+                             filter=GRangesFilter(chr1), columns=c("gene_name"))
+head(promoterRegions)
+```
+
+# Differential Methylation Testing
+
+## Bsseq object
+
+We will use a BSseq object that contains data from embryonic stem cells (ESC) and astrocytes.
+
+```{r}
+bs <- readRDS("ESC_astrocytes_BSseq.rds")
+bs
+
+# remove CpGs that have 0 coverage in some samples:
+bs <- bs[rowSums(assay(bs,"Cov")>0)==ncol(bs),]
+
+design <- model.matrix(~celltype, data=pData(bs)) 
+design
+# adapt the design for methylation data:
+methdesign <- modelMatrixMeth(design)
+
+bs <- suppressWarnings(
+  BSmooth(bs, BPPARAM = MulticoreParam(4, progress = TRUE))
+)
+```
+
+## Extracting average methylation in regions of interest
+
+```{r}
+# we get the chr1 promoters for this genome:
+genes <- readRDS("hg19_chr1_genes.rds")
+proms <- promoters(genes)
+```
+
+## Statistical testing
+
+### Testing each CpG individually
+
+```{r}
+# CpG-level tests:
+seqAnnot <- sequencing.annotate(bs, methdesign, all.cov=TRUE, coef="celltypeastrocytes")
+
+# look at the top most significant CpGs:
+res <- seqAnnot@ranges
+res <- res[order(res$ind.fdr),]
+head(res)
+```
+
+### Differentially-methylated regions (DMRs)
+
+Identifying broader regions of coherent changes:
+
+```{r}
+dmrcateRes <- dmrcate(seqAnnot, C=2, min.cpgs=5)
+dmrRanges <- extractRanges(dmrcateRes, genome="hg19")
+saveRDS(dmrRanges, "dmr.rds")
+
+ggplot(as.data.frame(dmrRanges), aes(meandiff, -log10(HMFDR), colour=width, size=no.cpgs)) + geom_point()
+
+dmrRanges <- dmrRanges[order(abs(dmrRanges$meandiff), decreasing=TRUE)]
+```
+
+```{r}
+dmr_chr1 <- dmrRanges[seqnames(dmrRanges) %in% c("chr1", "1")]
+dmr_chr1 <- dmr_chr1[order(abs(dmr_chr1$meandiff), decreasing = TRUE)]
+top5_dmr_chr1 <- head(dmr_chr1, 5)
+```
+
+```{r}
+genes <- readRDS("hg19_chr1_genes.rds")
+seqlevelsStyle(genes) <- seqlevelsStyle(top5_dmr_chr1)
+
+genes_top5 <- subsetByOverlaps(genes, top5_dmr_chr1)
+
+met_gene_body <- bsseq::getMeth(
+  bs,
+  regions = genes_top5,
+  what = "perRegion"
+)
+
+gene_labels <- if ("symbol" %in% names(mcols(genes_top5))) {
+  genes_top5$symbol
+}
+
+rownames(met_gene_body) <- make.unique(gene_labels)
+```
+
+```{r}
+pheatmap(
+  met_gene_body,
+  name = "methylation",
+  cluster_rows = TRUE,
+  cluster_cols = TRUE,
+  main = "Methylation of genes overlapping top 5 chr1 DMRs"
+)
+```
+
+# Part 2
+
+```{r}
+da_url <- "https://www.ethz-ins.org/content/ATAC_AstroVsESC_subset.rds"
+da_ranges <- readRDS(url(da_url))
+da_ranges
+```
+
+
+```{r}
+dmr_chr1 <- dmrRanges[seqnames(dmrRanges) %in% c("chr1", "1")]
+dmr_chr1 <- dmr_chr1[order(abs(dmr_chr1$meandiff), decreasing = TRUE)]
+
+seqlevelsStyle(da_ranges) <- seqlevelsStyle(dmr_chr1)
+
+hits <- findOverlaps(dmr_chr1, da_ranges)
+
+atac_change_col <- "logFC"
+
+df_agree <- data.frame(
+  DMR_index = queryHits(hits),
+  DNAme_change = dmr_chr1$meandiff[queryHits(hits)],
+  ATAC_change = mcols(da_ranges)[[atac_change_col]][subjectHits(hits)]
+)
+
+df_agree <- df_agree[complete.cases(df_agree), ]
+
+df_agree$relationship <- ifelse(
+  sign(df_agree$DNAme_change) == -sign(df_agree$ATAC_change),
+  "opposite direction",
+  "same direction"
+)
+```
+
+```{r}
+ggplot(df_agree, aes(DNAme_change, ATAC_change)) +
+  geom_point(aes(colour = relationship), alpha = 0.7) +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  geom_smooth(method = "lm", se = FALSE, colour = "black") +
+  theme_bw() +
+  labs(
+    x = "DMR methylation difference",
+    y = "Differential accessibility change",
+    colour = "Relationship",
+    title = "Agreement between methylation and accessibility changes"
+  )
+
+cor.test(
+  df_agree$DNAme_change,
+  df_agree$ATAC_change,
+  method = "spearman"
+)
+
+table(df_agree$relationship)
+prop.table(table(df_agree$relationship))
+```
+
+This overlaps DMRs with differential accessibility regions and compares methylation change with ATAC change at the same loci. Opposite-direction changes suggest expected regulatory agreement, where increased methylation corresponds to reduced accessibility, while same-direction changes suggest disagreement or more complex regulation.
