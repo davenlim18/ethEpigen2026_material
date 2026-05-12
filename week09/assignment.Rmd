@@ -1,0 +1,127 @@
+---
+title: "Clustering and enrichment analysis"
+author: "Daven Lim"
+output: html_document
+---
+
+```{r}
+suppressPackageStartupMessages({
+  library(GenomicRanges)
+  library(epiwraps)
+  library(ggplot2)
+  library(rGREAT) # Gene Ontology enrichment among genomic regions
+  library(GenomeInfoDb)
+})
+```
+
+
+## Download the data
+
+```{r, eval=FALSE}
+options(timeout = 6000)
+download.file("https://ethz-ins.org/content/clustering_assignment.zip", "clustering_assignment.zip")
+unzip("clustering_assignment.zip")
+list.files()
+```
+
+## Prepare the regions and the tracks
+```{r}
+tracks <- list.files(pattern="bw$")
+tracks
+```
+
+```{r}
+# regions <- rtracklayer::import.bed("Creb3L1.bed")
+
+peaks <- list.files(pattern="bed$")
+peaks <- lapply(peaks, rtracklayer::import.bed)
+peaks <- lapply(peaks, function(x) keepSeqlevels(x, "chr1", pruning.mode="coarse"))
+peaks <- lapply(peaks, FUN=function(x) x[x$score>800])
+regions <- reduce(unlist(GRangesList(peaks)))
+regions <- keepSeqlevels(regions, "chr1", pruning.mode="coarse")
+```
+
+## Plot
+
+```{r}
+ese <- signal2Matrix(tracks, regions, extend=2000)
+plotEnrichedHeatmaps(ese)
+# ese2 <- ese[1:1000,]
+plotEnrichedHeatmaps(ese, cluster_rows = TRUE, show_row_dend=TRUE )
+```
+
+## Clustering
+
+```{r}
+cl2 <- clusterSignalMatrices(ese, k=2:10)
+ggplot(cl2$varExplained, aes(k, varExplained)) + geom_line()
+```
+
+```{r}
+set.seed(123)
+cl <- clusterSignalMatrices(ese, k=3, scaleRows=TRUE)
+table(cl)
+head(cl)
+length(cl)
+nrow(ese)
+rowData(ese)$cluster <- cl
+head(rowData(ese))
+```
+
+Plotting the clusters:
+
+```{r}
+#plotEnrichedHeatmaps(ese, row_split="cluster", colors=c("white","darkred"))
+plotEnrichedHeatmaps(ese, row_split=rowData(ese)$cluster, 
+                     colors=c("white","darkred"))
+```
+
+Adding colors:
+
+```{r}
+mycolors <- c("1"="red", "2"="blue", "3"="darkgreen", "4"="black")
+plotEnrichedHeatmaps(ese, row_split="cluster", mean_color=mycolors, colors=c("white","darkred"))
+```
+
+Plotting just the averages:
+
+```{r}
+d <- meltSignals(ese, splitBy=cl)
+ggplot(d, aes(position, mean, colour=sample)) + geom_line(size=1.2) + facet_wrap(~split)
+```
+
+
+Clustering using relative signal instead:
+
+```{r}
+set.seed(123)
+cl <- clusterSignalMatrices(ese, k=3, scaleRows = TRUE)
+d <- meltSignals(ese, splitBy=cl)
+ggplot(d, aes(position, mean, colour=sample)) + geom_line() + facet_wrap(~split)
+plotEnrichedHeatmaps(ese, row_split = cl, scale_rows = "global")
+```
+
+
+## Enrichment analysis
+
+Find what's enriched in one cluster with respect to the others:
+
+```{r}
+split_regions <- split(rowRanges(ese), rowData(ese)$cluster)
+lengths(split_regions)
+
+res <- great(split_regions[["3"]], gene_sets="GO:BP", tss_source="hg38", 
+             background=regions, cores=2)
+bp <- getEnrichmentTables(res)
+head(bp)
+```
+
+We plot the top Biological Processes:
+
+```{r, fig.width=9, fig.height=6}
+ggplot(head(bp,15), aes(fold_enrichment, reorder(description, p_adjust), 
+                        size=observed_region_hits, color=-log10(p_adjust))) + 
+  geom_point() + scale_color_viridis_c()
+```
+
+Clustering analysis on CREB-family binding regions on chromosome 1 revealed occupancy patterns across the three transcription factors. The heatmaps and signal profile plots showed subsets of regions that exhibited stronger enrichment for specific factors, indicating specific binding behavior. K-means clustering separated the regions into groups with different binding intensities, with the number of clusters selected based on the variance-explained plot (three clusters), suggesting functional specialization among the CREB family proteins. Gene Ontology enrichment analysis of one cluster identified significant enrichment for immune-related biological processes, including immune system process, leukocyte activation, immune effector process, and cell activation. Additional enrichment was also observed for signaling and cellular response pathways. This suggests that this cluster may represent regulatory regions involved in immune signaling and cellular communication, and a possible role for CREB-family transcription factors in controlling immune-associated gene regulation.
